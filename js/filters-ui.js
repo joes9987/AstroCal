@@ -95,55 +95,172 @@ function createVisibilityInfo(visibility, visibilityWindow) {
     return info;
 }
 
+function mediaPath(url) {
+    return String(url || '').split('?')[0].split('#')[0].toLowerCase();
+}
+
+function isDirectVideo(url) {
+    const path = mediaPath(url);
+    return path.endsWith('.mp4') || path.endsWith('.webm');
+}
+
+function directVideoType(url) {
+    return mediaPath(url).endsWith('.webm') ? 'video/webm' : 'video/mp4';
+}
+
+function usableThumbnail(url) {
+    if (!url || typeof url !== 'string') return '';
+    const lower = url.toLowerCase();
+    if (lower.includes('nasa-logo') || lower.includes('news-thumbnail')) return '';
+    return url;
+}
+
+function extractVimeoId(url) {
+    const match = String(url || '').match(/player\.vimeo\.com\/video\/(\d+)/i);
+    return match ? match[1] : null;
+}
+
+function apodCreditHtml(event) {
+    if (event.category !== 'apod' || !event.copyright) return '';
+    const label = `© ${escapeHtml(event.copyright)}`;
+    if (!event.permalink) return `<p class="apod-credit">${label}</p>`;
+    return `<p class="apod-credit"><a href="${escapeHtml(event.permalink)}" target="_blank" rel="noopener noreferrer">${label}</a></p>`;
+}
+
+function fileVideoHtml(event, detail) {
+    const poster = usableThumbnail(event.thumbnailUrl);
+    const posterAttr = poster ? ` poster="${escapeHtml(poster)}"` : '';
+    const source = `<source src="${escapeHtml(event.imageUrl)}" type="${directVideoType(event.imageUrl)}">`;
+    if (detail) {
+        return `
+            <div class="event-detail-video event-detail-video-file">
+                <video controls playsinline preload="metadata"${posterAttr}>
+                    ${source}
+                </video>
+            </div>
+        `;
+    }
+    return `
+        <div class="event-video-container">
+            <video class="event-image" controls playsinline preload="metadata"${posterAttr}>
+                ${source}
+            </video>
+        </div>
+    `;
+}
+
+function watchVideoLink(url, label) {
+    return `<div class="event-video-link"><a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${label}</a></div>`;
+}
+
+function thumbnailVideoLink(event, href, thumbnailUrl, fallbackThumbnail) {
+    const onerror = fallbackThumbnail
+        ? ` onerror="this.src='${escapeHtml(fallbackThumbnail)}'"`
+        : '';
+    return `
+        <div class="event-image-container">
+            <a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer" class="event-video-thumbnail">
+                <img src="${escapeHtml(thumbnailUrl)}" alt="${escapeHtml(event.title)}" class="event-image" loading="lazy"${onerror}>
+                <div class="video-play-overlay">▶</div>
+            </a>
+            <span class="video-label">Video</span>
+        </div>
+    `;
+}
+
+function apodMediaHtml(event, detail) {
+    if (event.category === 'apod' && event.imageUrl && event.mediaType === 'video') {
+        if (isDirectVideo(event.imageUrl)) return fileVideoHtml(event, detail);
+
+        const isYouTube = event.imageUrl.includes('youtube.com') || event.imageUrl.includes('youtu.be');
+        if (isYouTube) {
+            const videoId = extractYouTubeId(event.imageUrl);
+            if (!videoId) {
+                return watchVideoLink(event.imageUrl, detail ? 'Watch Video on YouTube →' : 'Watch Video →');
+            }
+            if (detail) {
+                return `
+                    <div class="event-detail-video">
+                        <iframe
+                            src="https://www.youtube.com/embed/${videoId}"
+                            frameborder="0"
+                            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                            allowfullscreen
+                            loading="lazy"
+                            title="${escapeHtml(event.title)}"
+                            referrerpolicy="no-referrer-when-downgrade">
+                        </iframe>
+                        <a href="${escapeHtml(event.imageUrl)}" target="_blank" rel="noopener noreferrer" class="external-link">Watch on YouTube →</a>
+                    </div>
+                `;
+            }
+            const thumbnailUrl = usableThumbnail(event.thumbnailUrl) || `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
+            const fallbackThumbnail = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
+            return thumbnailVideoLink(event, event.imageUrl, thumbnailUrl, fallbackThumbnail);
+        }
+
+        const vimeoId = extractVimeoId(event.imageUrl);
+        if (vimeoId) {
+            const href = `https://player.vimeo.com/video/${vimeoId}`;
+            if (detail) {
+                return `
+                    <div class="event-detail-video">
+                        <iframe
+                            src="${href}"
+                            frameborder="0"
+                            allow="autoplay; fullscreen; picture-in-picture"
+                            allowfullscreen
+                            loading="lazy"
+                            title="${escapeHtml(event.title)}">
+                        </iframe>
+                        <a href="${escapeHtml(event.imageUrl)}" target="_blank" rel="noopener noreferrer" class="external-link">Watch on Vimeo →</a>
+                    </div>
+                `;
+            }
+            const thumbnailUrl = usableThumbnail(event.thumbnailUrl);
+            if (thumbnailUrl) return thumbnailVideoLink(event, href, thumbnailUrl, '');
+            return watchVideoLink(href, 'Watch Video →');
+        }
+
+        return watchVideoLink(event.imageUrl, 'Watch Video →');
+    }
+
+    if (event.category === 'apod' && event.imageUrl) {
+        const hdFallback = event.hdImageUrl && event.hdImageUrl !== event.imageUrl
+            ? event.hdImageUrl
+            : '';
+        const onerror = hdFallback
+            ? `this.onerror=function(){this.onerror=null;this.style.display='none';};this.src='${escapeHtml(hdFallback)}'`
+            : `this.onerror=null;this.style.display='none'`;
+        const img = `<img src="${escapeHtml(event.imageUrl)}" alt="${escapeHtml(event.title)}" class="event-image" loading="lazy" onerror="${onerror}">`;
+        if (!detail) return img;
+        return `
+            <div class="event-detail-image">
+                <img src="${escapeHtml(event.imageUrl)}" alt="${escapeHtml(event.title)}" loading="lazy">
+                ${event.hdImageUrl ? `<a href="${escapeHtml(event.hdImageUrl)}" target="_blank" rel="noopener noreferrer" class="hd-link">View HD Image</a>` : ''}
+            </div>
+        `;
+    }
+
+    if (event.imageUrl && event.mediaType === 'image') {
+        const img = `<img src="${escapeHtml(event.imageUrl)}" alt="${escapeHtml(event.title)}" class="event-image" loading="lazy">`;
+        if (!detail) return img;
+        return `
+            <div class="event-detail-image">
+                ${img}
+            </div>
+        `;
+    }
+
+    return '';
+}
+
 export function createEventCard(event) {
     const date = new Date(event.datetime);
     const formattedDate = formatDateTime(date);
     const categoryClass = `category-${event.category}`;
     const categoryLabel = getCategoryLabel(event.category);
-
-    let imageHtml = '';
-    if (event.category === 'apod' && event.imageUrl) {
-        if (event.mediaType === 'video') {
-            const isYouTube = event.imageUrl.includes('youtube.com') || event.imageUrl.includes('youtu.be');
-            if (isYouTube) {
-                const videoId = extractYouTubeId(event.imageUrl);
-                if (videoId) {
-                    const thumbnailUrl = event.thumbnailUrl || `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
-                    const fallbackThumbnail = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
-                    imageHtml = `
-                        <div class="event-image-container">
-                            <a href="${escapeHtml(event.imageUrl)}" target="_blank" rel="noopener noreferrer" class="event-video-thumbnail">
-                                <img src="${escapeHtml(thumbnailUrl)}" alt="${escapeHtml(event.title)}" class="event-image" loading="lazy" onerror="this.src='${escapeHtml(fallbackThumbnail)}'">
-                                <div class="video-play-overlay">▶</div>
-                            </a>
-                            <span class="video-label">Video</span>
-                        </div>
-                    `;
-                } else {
-                    imageHtml = `<div class="event-video-link"><a href="${escapeHtml(event.imageUrl)}" target="_blank" rel="noopener noreferrer">Watch Video →</a></div>`;
-                }
-            } else {
-                imageHtml = `
-                    <div class="event-video-container">
-                        <video class="event-image" controls preload="metadata" loading="lazy">
-                            <source src="${escapeHtml(event.imageUrl)}" type="video/mp4">
-                            Your browser does not support the video tag.
-                        </video>
-                    </div>
-                `;
-            }
-        } else {
-            const hdFallback = event.hdImageUrl && event.hdImageUrl !== event.imageUrl
-                ? event.hdImageUrl
-                : '';
-            const onerror = hdFallback
-                ? `this.onerror=function(){this.onerror=null;this.style.display='none';};this.src='${escapeHtml(hdFallback)}'`
-                : `this.onerror=null;this.style.display='none'`;
-            imageHtml = `<img src="${escapeHtml(event.imageUrl)}" alt="${escapeHtml(event.title)}" class="event-image" loading="lazy" onerror="${onerror}">`;
-        }
-    } else if (event.imageUrl && event.mediaType === 'image') {
-        imageHtml = `<img src="${escapeHtml(event.imageUrl)}" alt="${escapeHtml(event.title)}" class="event-image" loading="lazy">`;
-    }
+    const imageHtml = apodMediaHtml(event, false);
 
     const timeInfo = getTimeUntilEvent(event.datetime);
     const timeDisplay = formatTimeRemaining(timeInfo.timeRemaining, timeInfo.passed);
@@ -167,6 +284,7 @@ export function createEventCard(event) {
             </div>
             ${imageHtml}
             ${event.fallbackNote ? `<p class="apod-fallback-note">${escapeHtml(event.fallbackNote)}</p>` : ''}
+            ${apodCreditHtml(event)}
             <div class="event-datetime">
                 📅 ${formattedDate}
             </div>
@@ -256,7 +374,7 @@ export function renderEvents() {
 
     document.querySelectorAll('.event-card').forEach((card, index) => {
         card.addEventListener('click', (e) => {
-            if (e.target.closest('.sky-map-link')) return;
+            if (e.target.closest('a, button, video, iframe')) return;
             const actualIndex = issNote ? index - 1 : index;
             if (actualIndex >= 0 && actualIndex < filteredEvents.length) {
                 showEventDetail(filteredEvents[actualIndex]);
@@ -283,55 +401,7 @@ export function showEventDetail(event) {
     const categoryClass = `category-${event.category}`;
     const categoryLabel = getCategoryLabel(event.category);
 
-    let imageHtml = '';
-    if (event.category === 'apod' && event.imageUrl) {
-        if (event.mediaType === 'video') {
-            const isYouTube = event.imageUrl.includes('youtube.com') || event.imageUrl.includes('youtu.be');
-            if (isYouTube) {
-                const videoId = extractYouTubeId(event.imageUrl);
-                if (videoId) {
-                    imageHtml = `
-                        <div class="event-detail-video">
-                            <iframe
-                                src="https://www.youtube.com/embed/${videoId}"
-                                frameborder="0"
-                                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                                allowfullscreen
-                                loading="lazy"
-                                title="${escapeHtml(event.title)}"
-                                referrerpolicy="no-referrer-when-downgrade">
-                            </iframe>
-                            <a href="${escapeHtml(event.imageUrl)}" target="_blank" rel="noopener noreferrer" class="external-link">Watch on YouTube →</a>
-                        </div>
-                    `;
-                } else {
-                    imageHtml = `<div class="event-video-link"><a href="${escapeHtml(event.imageUrl)}" target="_blank" rel="noopener noreferrer">Watch Video on YouTube →</a></div>`;
-                }
-            } else {
-                imageHtml = `
-                    <div class="event-detail-video">
-                        <video controls preload="metadata" loading="lazy">
-                            <source src="${escapeHtml(event.imageUrl)}" type="video/mp4">
-                            Your browser does not support the video tag.
-                        </video>
-                    </div>
-                `;
-            }
-        } else {
-            imageHtml = `
-                <div class="event-detail-image">
-                    <img src="${escapeHtml(event.imageUrl)}" alt="${escapeHtml(event.title)}" loading="lazy">
-                    ${event.hdImageUrl ? `<a href="${escapeHtml(event.hdImageUrl)}" target="_blank" rel="noopener noreferrer" class="hd-link">View HD Image</a>` : ''}
-                </div>
-            `;
-        }
-    } else if (event.imageUrl && event.mediaType === 'image') {
-        imageHtml = `
-            <div class="event-detail-image">
-                <img src="${escapeHtml(event.imageUrl)}" alt="${escapeHtml(event.title)}" loading="lazy">
-            </div>
-        `;
-    }
+    const imageHtml = apodMediaHtml(event, true);
 
     const skyMapBtn = (event.category === 'planet' && event.planetName)
         ? `<button type="button" class="filter-action-btn" id="detailSkyMapBtn" data-sky-target="${escapeHtml(event.planetName)}">Show in Sky Map</button>`
@@ -345,6 +415,7 @@ export function showEventDetail(event) {
         </div>
         ${imageHtml}
         ${event.fallbackNote ? `<p class="apod-fallback-note">${escapeHtml(event.fallbackNote)}</p>` : ''}
+        ${apodCreditHtml(event)}
         <div class="event-datetime">📅 ${formattedDate}</div>
         ${event.location ? `<div class="event-location">📍 ${escapeHtml(event.location)}</div>` : ''}
         <p class="event-description">${escapeHtml(event.description)}</p>

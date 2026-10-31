@@ -153,6 +153,8 @@ function convertAPODToEvent(apodData, options = {}) {
         thumbnailUrl: apodData.thumbnail_url,
         source: 'NASA APOD'
     };
+    if (apodData.copyright) event.copyright = apodData.copyright;
+    if (apodData.permalink) event.permalink = apodData.permalink;
     if (options.fallback) {
         event.fallbackNote = apodFallbackNote(apodData.date);
     }

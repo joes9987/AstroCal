@@ -1548,6 +1548,23 @@ body.reduce-motion .motion-toggle .motion-icon {
     margin: 0.75rem 0 0;
 }
 
+.apod-credit {
+    font-family: var(--font-body);
+    font-size: 0.85rem;
+    line-height: 1.4;
+    color: var(--text-secondary);
+    margin: 0.75rem 0 0;
+}
+
+.apod-credit a {
+    color: var(--accent-primary);
+    text-decoration: none;
+}
+
+.apod-credit a:hover {
+    text-decoration: underline;
+}
+
 .event-source {
     margin-top: 0.5rem;
     font-family: var(--font-body);
@@ -1594,6 +1611,17 @@ body.reduce-motion .motion-toggle .motion-icon {
     border-radius: 12px;
     max-height: 500px;
     background-color: var(--bg-secondary);
+}
+
+.event-detail-video-file {
+    height: auto;
+    padding-bottom: 0;
+    overflow: visible;
+}
+
+.event-detail-video-file video {
+    position: static;
+    height: auto;
 }
 
 .event-detail-video .external-link {
