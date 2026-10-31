@@ -70,10 +70,14 @@ export function clearNASACache() {
     localStorage.removeItem(CACHE_KEYS.apod);
     localStorage.removeItem(CACHE_KEYS.donki);
     localStorage.removeItem(CACHE_KEYS.eonet);
+    localStorage.removeItem(APOD_FALLBACK_MISS_KEY);
 }
 
 const APOD_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-const APOD_FALLBACK_DAYS = 5;
+const APOD_FALLBACK_DAYS = 30;
+const APOD_FALLBACK_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+const APOD_FALLBACK_MISS_MAX_AGE_MS = 60 * 60 * 1000;
+const APOD_FALLBACK_MISS_KEY = 'nasa_apod_fallback_miss';
 
 function looksLikePhotoUrl(url) {
     if (typeof url !== 'string') return false;
@@ -178,6 +182,56 @@ async function findEarlierGoodApod(fromDate) {
     return null;
 }
 
+function clearApodFallbackMiss() {
+    localStorage.removeItem(APOD_FALLBACK_MISS_KEY);
+}
+
+function rememberApodFallbackMiss() {
+    setCachedData(APOD_FALLBACK_MISS_KEY, { missed: true });
+}
+
+function hasRecentApodFallbackMiss() {
+    return isCacheValid(APOD_FALLBACK_MISS_KEY, APOD_FALLBACK_MISS_MAX_AGE_MS);
+}
+
+/**
+ * Today's picture is unusable. Reuse a fresh cached photo, or walk back one
+ * day at a time. A miss is remembered so the next loads do not walk again.
+ */
+async function resolveApodFallback(cacheKey, fromDate) {
+    const cached = readGoodCachedApod(cacheKey);
+    if (cached && isCacheValid(cacheKey, APOD_FALLBACK_MAX_AGE_MS)) {
+        console.log('Using cached APOD fallback:', cached.date);
+        return convertAPODToEvent(cached, { fallback: true });
+    }
+
+    if (hasRecentApodFallbackMiss()) {
+        if (cached) {
+            console.log('Using cached APOD image after a recent search:', cached.date);
+            return convertAPODToEvent(cached, { fallback: true });
+        }
+        console.warn('Skipping APOD walk-back; a recent search found no photo');
+        return null;
+    }
+
+    const earlier = await findEarlierGoodApod(fromDate);
+    if (earlier) {
+        setCachedData(cacheKey, earlier);
+        clearApodFallbackMiss();
+        console.log('Using earlier APOD image:', earlier.date);
+        return convertAPODToEvent(earlier, { fallback: true });
+    }
+
+    rememberApodFallbackMiss();
+    if (cached) {
+        console.log('Keeping previous APOD image; walk-back found nothing newer:', cached.date);
+        return convertAPODToEvent(cached, { fallback: true });
+    }
+
+    console.warn(`No usable APOD image in the last ${APOD_FALLBACK_DAYS} days`);
+    return null;
+}
+
 export async function loadAPOD(forceRefresh = false) {
     const config = getNASAConfig();
     if (!config) return null;
@@ -198,27 +252,14 @@ export async function loadAPOD(forceRefresh = false) {
 
         if (!isUnusableApodImage(data)) {
             setCachedData(cacheKey, data);
+            clearApodFallbackMiss();
             console.log('Loaded APOD:', data.title);
             return convertAPODToEvent(data);
         }
 
         console.warn('Today\'s APOD image is not a photo; using the last good picture');
-        const cached = readGoodCachedApod(cacheKey);
-        if (cached) {
-            console.log('Using cached APOD image:', cached.date);
-            return convertAPODToEvent(cached, { fallback: true });
-        }
-
         const fromDate = (data && typeof data.date === 'string') ? data.date : shiftIsoDate(null, 0);
-        const earlier = await findEarlierGoodApod(fromDate);
-        if (earlier) {
-            setCachedData(cacheKey, earlier);
-            console.log('Using earlier APOD image:', earlier.date);
-            return convertAPODToEvent(earlier, { fallback: true });
-        }
-
-        console.warn('No usable APOD image in the last 5 days');
-        return null;
+        return resolveApodFallback(cacheKey, fromDate);
     } catch (error) {
         if (error.message.includes('CORS') || error.message.includes('NetworkError')) {
             console.warn('APOD API unavailable (CORS error), using cache if available');
