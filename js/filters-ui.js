@@ -133,7 +133,13 @@ export function createEventCard(event) {
                 `;
             }
         } else {
-            imageHtml = `<img src="${escapeHtml(event.imageUrl)}" alt="${escapeHtml(event.title)}" class="event-image" loading="lazy">`;
+            const hdFallback = event.hdImageUrl && event.hdImageUrl !== event.imageUrl
+                ? event.hdImageUrl
+                : '';
+            const onerror = hdFallback
+                ? `this.onerror=function(){this.onerror=null;this.style.display='none';};this.src='${escapeHtml(hdFallback)}'`
+                : `this.onerror=null;this.style.display='none'`;
+            imageHtml = `<img src="${escapeHtml(event.imageUrl)}" alt="${escapeHtml(event.title)}" class="event-image" loading="lazy" onerror="${onerror}">`;
         }
     } else if (event.imageUrl && event.mediaType === 'image') {
         imageHtml = `<img src="${escapeHtml(event.imageUrl)}" alt="${escapeHtml(event.title)}" class="event-image" loading="lazy">`;
@@ -160,6 +166,7 @@ export function createEventCard(event) {
                 </div>
             </div>
             ${imageHtml}
+            ${event.fallbackNote ? `<p class="apod-fallback-note">${escapeHtml(event.fallbackNote)}</p>` : ''}
             <div class="event-datetime">
                 📅 ${formattedDate}
             </div>
@@ -337,6 +344,7 @@ export function showEventDetail(event) {
             ${event.approximate ? '<span class="event-passed-badge">Approximate visibility</span>' : ''}
         </div>
         ${imageHtml}
+        ${event.fallbackNote ? `<p class="apod-fallback-note">${escapeHtml(event.fallbackNote)}</p>` : ''}
         <div class="event-datetime">📅 ${formattedDate}</div>
         ${event.location ? `<div class="event-location">📍 ${escapeHtml(event.location)}</div>` : ''}
         <p class="event-description">${escapeHtml(event.description)}</p>

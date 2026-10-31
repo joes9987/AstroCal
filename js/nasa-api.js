@@ -72,20 +72,110 @@ export function clearNASACache() {
     localStorage.removeItem(CACHE_KEYS.eonet);
 }
 
-function convertAPODToEvent(apodData) {
-    return {
+const APOD_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const APOD_FALLBACK_DAYS = 5;
+
+function looksLikePhotoUrl(url) {
+    if (typeof url !== 'string') return false;
+    const trimmed = url.trim();
+    if (!trimmed) return false;
+    const lower = trimmed.toLowerCase();
+    if (lower.includes('nasa-logo')) return false;
+    const path = lower.split('?')[0].split('#')[0];
+    return /\.(jpe?g|png|gif|webp|avif|bmp|tiff?)$/.test(path);
+}
+
+/** Image APODs whose url/hdurl is a NASA logo or otherwise not a photo. Videos are fine. */
+function isUnusableApodImage(apodData) {
+    if (!apodData || typeof apodData !== 'object') return true;
+    if (apodData.media_type && apodData.media_type !== 'image') return false;
+    const present = [apodData.url, apodData.hdurl].filter(url => typeof url === 'string' && url.trim());
+    if (present.length === 0) return true;
+    return !present.some(looksLikePhotoUrl);
+}
+
+function pickPhotoUrl(apodData) {
+    return [apodData?.url, apodData?.hdurl].find(looksLikePhotoUrl) || '';
+}
+
+function formatApodDay(dateStr) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateStr || '');
+    if (!match) return '';
+    const month = APOD_MONTHS[Number(match[2]) - 1];
+    if (!month) return '';
+    return `${month} ${Number(match[3])}, ${match[1]}`;
+}
+
+function apodFallbackNote(dateStr) {
+    const pretty = formatApodDay(dateStr);
+    const dated = pretty ? ` (${pretty})` : '';
+    return `Showing the last available picture${dated} - today's image isn't available from NASA yet.`;
+}
+
+function shiftIsoDate(isoDate, days) {
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isoDate || '');
+    const base = match
+        ? new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])))
+        : new Date();
+    base.setUTCDate(base.getUTCDate() + days);
+    return base.toISOString().slice(0, 10);
+}
+
+function readGoodCachedApod(cacheKey) {
+    const cached = getCachedData(cacheKey);
+    if (!cached) return null;
+    if (isUnusableApodImage(cached)) {
+        localStorage.removeItem(cacheKey);
+        return null;
+    }
+    return cached;
+}
+
+function convertAPODToEvent(apodData, options = {}) {
+    const imageMedia = !apodData.media_type || apodData.media_type === 'image';
+    const photoUrl = pickPhotoUrl(apodData);
+    const event = {
         id: `apod-${apodData.date}`,
         title: apodData.title || 'NASA Astronomy Picture of the Day',
         category: 'apod',
         datetime: `${apodData.date}T12:00:00Z`,
         description: apodData.explanation || 'Daily astronomy image from NASA.',
         location: 'NASA',
-        imageUrl: apodData.url,
+        imageUrl: imageMedia ? (photoUrl || apodData.url) : apodData.url,
         mediaType: apodData.media_type,
-        hdImageUrl: apodData.hdurl,
+        hdImageUrl: imageMedia
+            ? (looksLikePhotoUrl(apodData.hdurl) ? apodData.hdurl : undefined)
+            : apodData.hdurl,
         thumbnailUrl: apodData.thumbnail_url,
         source: 'NASA APOD'
     };
+    if (options.fallback) {
+        event.fallbackNote = apodFallbackNote(apodData.date);
+    }
+    return event;
+}
+
+async function fetchApodByDate(dateStr) {
+    const response = await nasaFetch('planetary/apod', dateStr ? { date: dateStr } : {});
+    if (!response.ok) {
+        throw new Error(`APOD API error! status: ${response.status}`);
+    }
+    return response.json();
+}
+
+async function findEarlierGoodApod(fromDate) {
+    for (let daysBack = 1; daysBack <= APOD_FALLBACK_DAYS; daysBack++) {
+        const dateStr = shiftIsoDate(fromDate, -daysBack);
+        try {
+            const data = await fetchApodByDate(dateStr);
+            if (data && !isUnusableApodImage(data)) {
+                return data;
+            }
+        } catch (error) {
+            console.warn(`APOD lookup failed for ${dateStr}:`, error);
+        }
+    }
+    return null;
 }
 
 export async function loadAPOD(forceRefresh = false) {
@@ -96,7 +186,7 @@ export async function loadAPOD(forceRefresh = false) {
     const maxAge = config.cacheSettings.apod;
 
     if (!forceRefresh && isCacheValid(cacheKey, maxAge)) {
-        const cached = getCachedData(cacheKey);
+        const cached = readGoodCachedApod(cacheKey);
         if (cached) {
             console.log('Using cached APOD data');
             return convertAPODToEvent(cached);
@@ -104,16 +194,31 @@ export async function loadAPOD(forceRefresh = false) {
     }
 
     try {
-        const response = await nasaFetch('planetary/apod');
+        const data = await fetchApodByDate();
 
-        if (!response.ok) {
-            throw new Error(`APOD API error! status: ${response.status}`);
+        if (!isUnusableApodImage(data)) {
+            setCachedData(cacheKey, data);
+            console.log('Loaded APOD:', data.title);
+            return convertAPODToEvent(data);
         }
 
-        const data = await response.json();
-        setCachedData(cacheKey, data);
-        console.log('Loaded APOD:', data.title);
-        return convertAPODToEvent(data);
+        console.warn('Today\'s APOD image is not a photo; using the last good picture');
+        const cached = readGoodCachedApod(cacheKey);
+        if (cached) {
+            console.log('Using cached APOD image:', cached.date);
+            return convertAPODToEvent(cached, { fallback: true });
+        }
+
+        const fromDate = (data && typeof data.date === 'string') ? data.date : shiftIsoDate(null, 0);
+        const earlier = await findEarlierGoodApod(fromDate);
+        if (earlier) {
+            setCachedData(cacheKey, earlier);
+            console.log('Using earlier APOD image:', earlier.date);
+            return convertAPODToEvent(earlier, { fallback: true });
+        }
+
+        console.warn('No usable APOD image in the last 5 days');
+        return null;
     } catch (error) {
         if (error.message.includes('CORS') || error.message.includes('NetworkError')) {
             console.warn('APOD API unavailable (CORS error), using cache if available');
@@ -121,7 +226,7 @@ export async function loadAPOD(forceRefresh = false) {
             console.error('Error loading APOD:', error);
         }
 
-        const cached = getCachedData(cacheKey);
+        const cached = readGoodCachedApod(cacheKey);
         if (cached) {
             console.log('Using cached APOD data due to API unavailability');
             return convertAPODToEvent(cached);
@@ -136,7 +241,7 @@ export async function loadAPODPriority() {
     if (!config) return Promise.resolve();
 
     const cacheKey = CACHE_KEYS.apod;
-    const cached = getCachedData(cacheKey);
+    const cached = readGoodCachedApod(cacheKey);
 
     if (cached) {
         const cachedEvent = convertAPODToEvent(cached);
